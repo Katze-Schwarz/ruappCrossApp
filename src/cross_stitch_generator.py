@@ -688,28 +688,120 @@ class CrossStitchApp(QMainWindow):
            QMessageBox.critical(self, "Error", f"Failed to determine color count:\n{str(e)}")
 
     def select_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", 
-                                           "Images (*.jpg *.jpeg *.png *.bmp)")
-        if path:
+      
+    # Open file dialog with image filters
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Image",
+            "",  # Start in last used directory
+            "Images (*.jpg *.jpeg *.png *.bmp *.webp);;All Files (*)"
+        )
+    
+    # User cancelled the dialog
+        if not path:
+            return
+    
+    # Show loading status
+        self.loading_label.setText("Loading image...")
+        QApplication.processEvents()  # Update UI immediately
+
+        try:
+        # ===== 1. PATH ENCODING FIX =====
+            try:
+            # Fix potential encoding issues with international characters
+                path = os.path.normpath(path)  # Normalize path separators
+                if isinstance(path, str):
+                    path = path.encode('utf-8', errors='strict').decode('utf-8')
+            except UnicodeError:
+            # Fallback for already-correct paths
+                pass
+        
+        # ===== 2. FILE EXISTENCE CHECK =====
+            if not os.path.isfile(path):
+                raise FileNotFoundError(
+                f"The file doesn't exist:\n{path}\n"
+                "It may have been moved or deleted."
+                )  
+
+        # ===== 3. IMAGE LOADING WITH FALLBACK =====
+            img = None
+        
+        # Attempt 1: Try OpenCV first
+            img = cv2.imread(path)
+        
+        # Attempt 2: If OpenCV fails, use Pillow as fallback
+            if img is None:
+                try:
+                    from PIL import Image
+                    with Image.open(path) as pil_img:
+                        if pil_img.mode == 'RGBA':
+                        # Handle transparency by converting to white background
+                            background = Image.new('RGB', pil_img.size, (255, 255, 255))
+                            background.paste(pil_img, mask=pil_img.split()[3])
+                            pil_img = background
+                        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                except Exception as pil_error:
+                  raise ValueError(
+                    f"Failed to load image with both OpenCV and Pillow.\n"
+                    f"OpenCV error: Unsupported format or corrupt file\n"
+                    f"Pillow error: {str(pil_error)}"
+                )
+
+        # ===== 4. ON SUCCESSFUL LOAD =====
             self.image_path = path
             self.img_path_label.setText(os.path.basename(path))
-            self.loading_label.setText("Loading...")
-            QApplication.processEvents()
-            
-            try:
-                img = cv2.imread(path)
-                if img is None:
-                    QMessageBox.critical(self, "Error", "Failed to load image")
-                    return
-                h, w = img.shape[:2]
-                self.original_height, self.original_width = h, w
-                self.aspect_ratio = w / h
-                self.scheme_width.setValue(min(IMAGE_SIZE, self.original_width))
-                self.update_height_from_width()
-                self.generate_preview()
-            finally:
-                self.loading_label.setText("")
+        
+        # Store image properties
+            height, width = img.shape[:2]
+            self.original_height, self.original_width = height, width
+            self.aspect_ratio = width / height
+        
+        # Set default pattern size
+            default_size = min(IMAGE_SIZE, width)
+            self.scheme_width.setValue(default_size)
+            self.update_height_from_width()
+        
+        # Generate preview
+            self.generate_preview()
 
+        except FileNotFoundError as e:
+           self.show_error_message("File Not Found", str(e))
+           self.reset_image_state()
+        
+        except ValueError as e:
+            self.show_error_message(
+            "Invalid Image",
+            f"Cannot read file as image:\n{str(e)}\n\n"
+            "Supported formats: JPG, PNG, BMP, WEBP"
+        )
+            self.reset_image_state()
+        
+        except Exception as e:
+           self.show_error_message(
+              "Unexpected Error",
+            f"An unexpected error occurred:\n{str(e)}"
+           )
+           self.reset_image_state()
+        
+        finally:
+           self.loading_label.setText("")
+
+    def reset_image_state(self):
+    
+     self.image_path = ""
+     self.img_path_label.setText("No file selected")
+     self.preview_image.clear()
+     self.preview_label.setText("Image not loaded")
+     self.current_image = None
+
+    def show_error_message(self, title, message):
+    
+     QMessageBox.critical(
+        self,
+        title,
+        message,
+        QMessageBox.StandardButton.Ok
+    )
     def generate_preview(self):
         if not self.image_path:
             return
